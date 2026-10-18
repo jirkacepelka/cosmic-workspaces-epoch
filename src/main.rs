@@ -415,8 +415,10 @@ impl App {
                     None,
                     Some(config.get_effective_anchor_gap()),
                 );
-                let size =
-                    config.size.get_applet_icon_size_with_padding(true) + u32::from(config.margin);
+                // The panel's padding surrounds its applets on both sides.
+                let size = config.size.get_applet_icon_size_with_padding(true)
+                    + 2 * config.padding
+                    + u32::from(config.margin);
                 match config.anchor {
                     PanelAnchor::Left => {
                         let size = dimention_constraints.0.map_or(size, |constraints| {
