@@ -13,11 +13,32 @@ use cosmic::iced::{self, Alignment, Border, Length};
 use cosmic::widget::{self, Widget, rectangle_tracker};
 use cosmic::{Apply, Element};
 use cosmic_comp_config::workspace::WorkspaceLayout;
+use cosmic_panel_config::PanelAnchor;
 use std::collections::HashSet;
 
 use crate::backend::{self, CaptureImage};
 use crate::dnd::{Drag, DragSurface, DragToplevel, DragWorkspace, DropTarget};
 use crate::{App, LayerSurface, Msg, RectId, Toplevel, Workspace};
+
+/// Height of a landscape workspace thumbnail in the normal overview.
+const WORKSPACE_SIZE: f32 = 126.0;
+
+/// How the overview is arranged on a surface.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct ViewLayout {
+    /// Orientation of the workspace bar
+    layout: WorkspaceLayout,
+    /// Workspace bar sized to its workspaces instead of the whole edge
+    compact: bool,
+    /// Height of a landscape workspace thumbnail
+    workspace_size: f32,
+}
+
+impl ViewLayout {
+    fn is_vertical(self) -> bool {
+        self.layout == WorkspaceLayout::Vertical
+    }
+}
 
 fn dnd_source_with_drag_surface<D: AsMimeTypes + Send + Clone + 'static>(
     drag_content: D,
@@ -91,7 +112,19 @@ pub(crate) fn layer_surface<'a>(
         .iter()
         .flat_map(|t| &t.info.workspace)
         .collect::<HashSet<_>>();
-    let layout = app.conf.workspace_config.workspace_layout;
+    let bar_anchor = app.bar_anchor();
+    let layout = ViewLayout {
+        layout: match bar_anchor {
+            PanelAnchor::Left | PanelAnchor::Right => WorkspaceLayout::Vertical,
+            PanelAnchor::Top | PanelAnchor::Bottom => WorkspaceLayout::Horizontal,
+        },
+        compact: app.is_compact(),
+        workspace_size: if app.is_compact() {
+            f32::from(app.conf.config.compact_workspace_size)
+        } else {
+            WORKSPACE_SIZE
+        },
+    };
     // track this rectangle
     let sidebar = workspaces_sidebar(
         app.workspaces.for_output(&surface.output),
@@ -103,6 +136,12 @@ pub(crate) fn layer_surface<'a>(
         window_id,
         rectangle_track,
     );
+    // A compact bar is only as long as its workspaces, centred along its edge.
+    let sidebar: cosmic::Element<'_, Msg> = match (layout.compact, layout.is_vertical()) {
+        (false, _) => sidebar,
+        (true, true) => widget::container(sidebar).center_y(Length::Fill).into(),
+        (true, false) => widget::container(sidebar).center_x(Length::Fill).into(),
+    };
     let toplevels = toplevel_previews(
         app.toplevels.0.iter().filter(|i| {
             if !i.info.output.contains(&surface.output) {
@@ -135,23 +174,31 @@ pub(crate) fn layer_surface<'a>(
         // Shouldn't happen, but no drag destination if no active workspace found for output
         cosmic::Element::from(toplevels)
     };
-    let container = match layout {
-        WorkspaceLayout::Vertical => widget::layer_container(
-            row![sidebar, toplevels]
-                .spacing(12)
-                .height(Length::Fill)
-                .width(Length::Fill),
-        ),
-        WorkspaceLayout::Horizontal => widget::layer_container(
-            column![sidebar, toplevels]
-                .spacing(12)
-                .height(Length::Fill)
-                .width(Length::Fill),
-        ),
+    let content: cosmic::Element<'_, Msg> = match bar_anchor {
+        PanelAnchor::Left => row![sidebar, toplevels]
+            .spacing(12)
+            .height(Length::Fill)
+            .width(Length::Fill)
+            .into(),
+        PanelAnchor::Right => row![toplevels, sidebar]
+            .spacing(12)
+            .height(Length::Fill)
+            .width(Length::Fill)
+            .into(),
+        PanelAnchor::Top => column![sidebar, toplevels]
+            .spacing(12)
+            .height(Length::Fill)
+            .width(Length::Fill)
+            .into(),
+        PanelAnchor::Bottom => column![toplevels, sidebar]
+            .spacing(12)
+            .height(Length::Fill)
+            .width(Length::Fill)
+            .into(),
     };
 
     let panel_regions = app.panel_regions(&surface.output);
-    let container = widget::container(container).padding(panel_regions);
+    let container = widget::container(widget::layer_container(content)).padding(panel_regions);
 
     let output = surface.output.clone();
 
@@ -241,10 +288,13 @@ fn workspace_item_appearance(
 fn workspace_item(
     workspace: &Workspace,
     _output: &wl_output::WlOutput,
-    layout: WorkspaceLayout,
+    layout: ViewLayout,
     is_drop_target: bool,
     has_workspace_drag: bool,
 ) -> cosmic::Element<'static, Msg> {
+    let height = layout.workspace_size;
+    // Portrait thumbnails keep the default 126:160 proportion of the bar.
+    let portrait_width = height * 160.0 / WORKSPACE_SIZE;
     let (mut image, image_height, image_width) = if let Some(img) = workspace.img.as_ref() {
         let is_rotated = matches!(
             img.transform,
@@ -263,25 +313,25 @@ fn workspace_item(
         if effective_width > effective_height {
             (
                 // Landscape: fix height
-                widget::container(capture_image(Some(img), 1.0)).max_height(126.0),
-                126.0,
-                126.0 * effective_width as f32 / effective_height as f32,
+                widget::container(capture_image(Some(img), 1.0)).max_height(height),
+                height,
+                height * effective_width as f32 / effective_height as f32,
             )
         } else {
             (
                 // Portrait: fix width
-                widget::container(capture_image(Some(img), 1.0)).max_width(160),
-                160.0 * effective_height as f32 / effective_width as f32,
-                160.0,
+                widget::container(capture_image(Some(img), 1.0)).max_width(portrait_width),
+                portrait_width * effective_height as f32 / effective_width as f32,
+                portrait_width,
             )
         }
     } else {
         (
             widget::container(capture_image(None, 1.0))
-                .max_height(126.0)
-                .max_width(224.0),
-            126.0,
-            224.0,
+                .max_height(height)
+                .max_width(height * 16.0 / 9.0),
+            height,
+            height * 16.0 / 9.0,
         )
     };
 
@@ -295,7 +345,7 @@ fn workspace_item(
     ];
 
     // Needed to prevent footer content getting pushed out when scaling on Vertical layout
-    if layout == WorkspaceLayout::Vertical {
+    if layout.is_vertical() && !layout.compact {
         image = image.height(Length::Fill);
     }
     let content = column![image, workspace_footer]
@@ -338,7 +388,7 @@ fn workspace_item(
 fn workspace_drag_placeholder(
     other_workspace: &Workspace,
     other_output: &wl_output::WlOutput,
-    layout: WorkspaceLayout,
+    layout: ViewLayout,
 ) -> cosmic::Element<'static, Msg> {
     let drop_target = DropTarget::WorkspaceSidebarDragPlaceholder(
         other_workspace.handle().clone(),
@@ -366,7 +416,7 @@ fn workspace_drag_placeholder(
 fn workspace_sidebar_entry<'a>(
     workspace: &'a Workspace,
     output: &'a wl_output::WlOutput,
-    layout: WorkspaceLayout,
+    layout: ViewLayout,
     is_drop_target: bool,
     has_toplevels: bool,
     has_workspace_drag: bool,
@@ -427,7 +477,7 @@ fn workspaces_sidebar<'a>(
     workspaces: impl Iterator<Item = &'a Workspace>,
     workspaces_with_toplevels: &HashSet<&backend::ExtWorkspaceHandleV1>,
     output: &'a wl_output::WlOutput,
-    layout: WorkspaceLayout,
+    layout: ViewLayout,
     drop_target: Option<&DropTarget>,
     drag_workspace: Option<&'a backend::ExtWorkspaceHandleV1>,
     window_id: window::Id,
@@ -484,9 +534,11 @@ fn workspaces_sidebar<'a>(
             drag_workspace.is_some(),
         ));
     }
-    let (axis, width, height) = match layout {
-        WorkspaceLayout::Vertical => (Axis::Vertical, Length::Shrink, Length::Fill),
-        WorkspaceLayout::Horizontal => (Axis::Horizontal, Length::Fill, Length::Shrink),
+    let (axis, width, height) = match (layout.layout, layout.compact) {
+        (WorkspaceLayout::Vertical, false) => (Axis::Vertical, Length::Shrink, Length::Fill),
+        (WorkspaceLayout::Horizontal, false) => (Axis::Horizontal, Length::Fill, Length::Shrink),
+        (WorkspaceLayout::Vertical, true) => (Axis::Vertical, Length::Shrink, Length::Shrink),
+        (WorkspaceLayout::Horizontal, true) => (Axis::Horizontal, Length::Shrink, Length::Shrink),
     };
     let sidebar_entries_container =
         widget::container(crate::widgets::workspace_bar(sidebar_entries, axis)).padding(8.0);
@@ -638,14 +690,15 @@ fn toplevel_previews_entry<'a>(
 
 fn toplevel_previews<'a>(
     toplevels: impl Iterator<Item = &'a Toplevel>,
-    layout: WorkspaceLayout,
+    layout: ViewLayout,
     drag_toplevel: Option<&'a backend::ExtForeignToplevelHandleV1>,
     window_id: window::Id,
     rectangle_track: &rectangle_tracker::RectangleTracker<RectId>,
 ) -> cosmic::Element<'a, Msg> {
-    let (width, height) = match layout {
-        WorkspaceLayout::Vertical => (Length::FillPortion(4), Length::Fill),
-        WorkspaceLayout::Horizontal => (Length::Fill, Length::FillPortion(4)),
+    let (width, height) = if layout.is_vertical() {
+        (Length::FillPortion(4), Length::Fill)
+    } else {
+        (Length::Fill, Length::FillPortion(4))
     };
     let entries = toplevels
         .map(|t| {

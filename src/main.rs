@@ -55,10 +55,36 @@ use dnd::{DragSurface, DragToplevel, DragWorkspace, DropTarget};
 
 const SCROLL_RATE_LIMIT: Duration = Duration::from_millis(200);
 
-#[derive(Clone, Debug, Default, PartialEq, CosmicConfigEntry)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum OverviewStyle {
+    /// Workspace bar spans the whole edge
+    #[default]
+    Normal,
+    /// Workspace bar only as long as its workspaces, with smaller thumbnails
+    Compact,
+}
+
+#[derive(Clone, Debug, PartialEq, CosmicConfigEntry)]
 struct CosmicWorkspacesConfig {
     show_workspace_number: bool,
     show_workspace_name: bool,
+    overview_style: OverviewStyle,
+    /// Edge the workspace bar is placed on; `None` follows the workspace layout
+    bar_position: Option<PanelAnchor>,
+    /// Height of workspace thumbnails in the compact overview, in logical pixels
+    compact_workspace_size: u16,
+}
+
+impl Default for CosmicWorkspacesConfig {
+    fn default() -> Self {
+        Self {
+            show_workspace_number: false,
+            show_workspace_name: false,
+            overview_style: OverviewStyle::Normal,
+            bar_position: None,
+            compact_workspace_size: 96,
+        }
+    }
 }
 
 #[derive(Parser, Debug, Clone)]
@@ -270,6 +296,21 @@ impl App {
             },
             None::<fn() -> cosmic::Element<'static, cosmic::Action<Msg>>>,
         ))
+    }
+
+    fn is_compact(&self) -> bool {
+        self.conf.config.overview_style == OverviewStyle::Compact
+    }
+
+    /// Edge the workspace bar is shown on.
+    fn bar_anchor(&self) -> PanelAnchor {
+        self.conf
+            .config
+            .bar_position
+            .unwrap_or(match self.conf.workspace_config.workspace_layout {
+                cosmic_comp_config::workspace::WorkspaceLayout::Vertical => PanelAnchor::Left,
+                cosmic_comp_config::workspace::WorkspaceLayout::Horizontal => PanelAnchor::Top,
+            })
     }
 
     fn destroy_surface(&mut self, output: &wl_output::WlOutput) -> Task<cosmic::Action<Msg>> {
