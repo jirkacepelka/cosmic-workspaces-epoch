@@ -670,20 +670,27 @@ fn toplevel_previews<'a>(
 }
 
 fn capture_image(image: Option<&CaptureImage>, alpha: f32) -> cosmic::Element<'static, Msg> {
+    // Matches the corner radius of the button around the image
+    let radius = cosmic::theme::active().cosmic().corner_radii.radius_s;
     if let Some(image) = image {
         #[cfg(feature = "no-subsurfaces")]
         {
             // TODO alpha, transform
-            widget::Image::new(image.image.clone()).into()
+            widget::Image::new(image.image.clone())
+                .border_radius(radius)
+                .into()
         }
         #[cfg(not(feature = "no-subsurfaces"))]
         {
             Subsurface::new(image.wl_buffer.clone())
                 .alpha(alpha)
                 .transform(image.transform)
+                .corner_radius(radius)
                 .into()
         }
     } else {
-        widget::Image::new(widget::image::Handle::from_rgba(1, 1, vec![0, 0, 0, 255])).into()
+        widget::Image::new(widget::image::Handle::from_rgba(1, 1, vec![0, 0, 0, 255]))
+            .border_radius(radius)
+            .into()
     }
 }
